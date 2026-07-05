@@ -1,256 +1,439 @@
-# RAG Pipeline for Financial Document Search
+# Cross-Border Credit Policy RAG
 
-A retrieval-augmented generation evaluation pipeline that systematically optimizes how a financial services team searches their corporate filings. Given a 160-page annual report, the system compares chunking strategies, embedding models, and retrieval methods to find the configuration that puts the right passage in front of an analyst on the first try.
-## Overview
+面向海外多国信贷政策、征信监管规则与金融合规文本的 RAG 检索评估管道。
 
-A financial services client needs their analysts to query annual reports accurately and quickly: "What was the year-over-year revenue growth?", "What drove the increase in operating expenses?", "How did the company's international expansion perform?" This pipeline evaluates 66 retrieval configurations against synthetic analyst queries to determine how to chunk, embed, and search a 160-page annual report so the relevant passage surfaces first. The result is a production-ready recommendation backed by standard IR metrics across 11 chunking configs, 2 embedding models, and 3 retrieval methods.
+本项目基于一个开源金融文档 RAG 评估框架二次重构，原框架主要用于企业财报检索；当前版本已经改造成更适合“跨国信贷合规政策库与征信数据中心”的系统骨架，重点解决法律条文 PDF 解析、法律层级保留、元数据硬过滤检索、严格防幻觉回答和检索质量评估。
 
-## Business Objective
+## 项目目标
 
-- Deliver a data-driven retrieval configuration for financial document search, replacing the typical "pick a chunk size and hope" approach.
-- Quantify retrieval quality using standard IR metrics (MRR, Recall@K, MAP, NDCG@K) across 66 experiments so the client can make an informed deployment decision.
-- Surface document-specific insights: financial text has structural properties (discrete factual claims, standardized terminology) that make some chunking strategies dramatically better than others.
+在印度 RBI、墨西哥央行、征信机构、乌干达监管机构等多国信贷合规文本中，实现可评估、可过滤、可追溯的 RAG 检索能力。
 
-## Client Impact
+核心目标：
 
-- Analysts get the right passage on the first query 83% of the time (MRR 0.831), with the relevant chunk in the top 5 results 97% of the time (Recall@5 0.967).
-- Saves engineering time by proving that overlap and reranking (two commonly recommended "improvements") actually degrade performance for this document type. The client avoids investing in pipeline complexity that would make results worse.
-- Provides a repeatable evaluation framework: when the client adds next year's annual report or expands to 10-K filings, they swap the source PDF and re-run the grid to validate that the same configuration holds.
+- 准确解析高度层级化的法律法规 PDF，尽量保留 Chapter、Article、Section 等结构。
+- 按句子切块，保持当前实验最优基准：`chunk_size=500`，`overlap=0`。
+- 给每个 chunk 注入国家、机构、文档类型、生效日期、法律层级等 metadata。
+- 支持前端或 API 按国家、机构、文档类型等字段做前置硬过滤。
+- 使用严格防幻觉 prompt，要求模型只基于检索到的政策切块回答，并强制标注出处。
+- 保持原有 Grid Search 评估流程可运行，后续可用真实风控 QA 集重新评估 MRR、Recall@5、NDCG@5 等指标。
 
-## Results Snapshot
+## 核心能力
 
-Based on 11 iterations (66 experiments) across 3 chunking strategies, 2 embedding models, and 3 retrieval methods:
+### 1. Layout-Aware 法规 PDF 解析
 
-- **Best configuration:** sentence chunking, 500 chars, no overlap, text-embedding-3-large, vector retrieval
-- **Best MRR: 0.831** | Recall@5: 0.967 | NDCG@5: 0.865
-- **Reranking (Cohere rerank-v3.5) reduced MRR by 0.070** and increased latency 4,000x
-- **All 3 chunking strategies, both embedding models, and all 3 retrieval methods compared**
+文件：`src/parsing.py`
 
-| Metric | Best Value | Target | Status |
-|---|---:|---:|---|
-| MRR | 0.831 | >= 0.85 | NOT MET |
-| Recall@5 | 0.967 | >= 0.90 | PASS |
-| MAP | 0.831 | >= 0.80 | PASS |
-| NDCG@5 | 0.865 | >= 0.85 | PASS |
-| Configurations tested | 66 | >= 12 | PASS |
-| Chunking strategies | 3 | >= 3 | PASS |
-| Embedding models | 2 | >= 2 | PASS |
-| QA pairs per config | 30 | >= 20 | PASS |
+新增推荐解析器：
 
-### Why MRR Is Below Target
+```python
+from src.parsing import parse_layout_markdown
 
-The 0.85 MRR target is based on a reference implementation that achieved 0.963 with a specific configuration (fixed_size, 256 chars, 50 overlap). Our pipeline tested that configuration space and found overlap to be destructive for this document: chunk counts exploded 3.7x to 12x, drowning retrieval in near-duplicates. The best achievable MRR without overlap is 0.831. This is an honest finding: the reference target assumes overlap helps, but for this 160-page annual report, it does not.
+pages = parse_layout_markdown("data/policies/mexico_credit_policy.pdf")
+```
 
-## Key Findings
+解析优先级：
 
-- **Sentence chunking outperforms fixed-size and semantic chunking for financial documents.** Annual reports are structured around discrete factual claims: "Revenue grew 15% year-over-year," "Operating expenses decreased by 8% due to automation initiatives." Each sentence is a self-contained fact that an analyst might query. Sentence boundaries align with this natural unit of information, producing chunks that embeddings can match precisely. Evidence: sentence/500/0 is the only configuration where pure vector retrieval outperformed hybrid, meaning the chunks were coherent enough that BM25 keyword matching added no value.
+1. Marker：优先用于复杂 PDF 到 Markdown 的结构化转换。
+2. Unstructured：使用 hi-res partition，适合复杂版式和表格。
+3. PyMuPDF layout fallback：在本地缺少重依赖时仍可运行，按页面 block 顺序输出 Markdown。
 
-- **Overlap is destructive at every ratio tested (5%, 10%, 20%).** Conventional wisdom suggests overlap improves retrieval by sharing context at chunk boundaries. For this document, overlap inflated chunk counts (1,340 to 4,989 at 5%; to 16,917 at 20%) and consistently degraded MRR. The word-boundary adjustment in fixed-size chunking amplifies the effect: backing up to a space boundary shortens each chunk, compounding the duplication. This held across both fixed-size and sentence chunking methods. For the client, this means a simpler pipeline: no overlap tuning needed.
+解析器会尽量把以下法律标题转为 Markdown 标题：
 
-- **500 characters is the optimal chunk size for analyst queries.** Tested at 500, 750, and 1000 across multiple chunking methods. Larger chunks dilute relevance: when an analyst asks about a specific revenue figure, a 1000-character chunk containing three different financial metrics ranks lower than a focused 500-character chunk containing just the relevant claim. The pattern held for both fixed-size (0.796 at 500 vs 0.709 at 1000) and sentence chunking (0.831 at 500 vs 0.781 at 1000).
+- `Chapter 3`
+- `Article 12`
+- `Section 3`
+- `Capítulo 2`
+- `Artículo 8`
+- `Sección 4`
+- `第三章`
+- `第十二条`
+- `第三款`
 
-- **Reranking hurts when upstream chunking is well-tuned.** Cohere rerank-v3.5 reduced MRR from 0.833 to 0.763 (-0.070) and increased latency from 1ms to 4,198ms. The general-purpose reranker disagreed with correct rankings that the initial vector retrieval got right. For the client, this is a cost and complexity saving: no reranking API subscription needed. It also demonstrates that investing in upstream chunking quality pays more dividends than bolting on downstream corrections.
+### 2. 合规 Metadata Schema
 
-## Visual Evidence
+文件：`src/models.py`
 
-### MRR by Configuration (Winning Iteration)
-![MRR bar chart showing vector/large as the top performer](docs/assets/1_mrr_bar.png)
+每个 chunk 的 metadata 保留原评估字段，同时新增合规字段：
 
-### Metrics Heatmap
-![Heatmap of all metrics across the 6 experiments in the winning iteration](docs/assets/3_metrics_heatmap.png)
+```python
+{
+    "chunk_size": 500,
+    "overlap": 0,
+    "parser": "layout_markdown",
+    "country": "Mexico",
+    "institution": "Buro de Credito",
+    "doc_type": "Compliance_Law",
+    "effective_date": "2026-03-01",
+    "legal_hierarchy": "Chapter 3 > Article 12 > Section 3"
+}
+```
 
-### Speed vs Quality Tradeoff
-![Scatter plot showing BM25 is fastest but below quality bar; vector/large is highest quality](docs/assets/6_time_vs_quality.png)
+字段说明：
 
-### Retrieval Method Comparison
-![Grouped bar chart comparing BM25, vector, and hybrid across key metrics](docs/assets/4_retrieval_comparison.png)
+| 字段 | 含义 | 示例 |
+|---|---|---|
+| `country` | 国家或司法辖区 | `India`, `Mexico`, `Uganda` |
+| `institution` | 发文机构或征信中心 | `RBI`, `CIBIL`, `Buro de Credito` |
+| `doc_type` | 文档类型 | `Compliance_Law`, `Credit_Reporting_Rule` |
+| `effective_date` | 生效或发布时间 | `2026-03-01` |
+| `legal_hierarchy` | 法律层级定位 | `Chapter 3 > Article 12 > Section 3` |
 
-### Recall vs Precision
-![Scatter plot of Recall@5 vs Precision@5 by retrieval method](docs/assets/2_recall_vs_precision.png)
+### 3. 句子切块与法律层级注入
 
-### Metric Correlation Matrix
-![Correlation matrix showing strong correlation between MRR, MAP, and NDCG](docs/assets/5_correlation_matrix.png)
+文件：`src/chunking.py`
 
-### All Iterations: MRR Comparison
-![Bar chart of MRR across all 66 experiments, showing the sentence/500/0 peak and the overlap collapse](docs/assets/all_iterations_mrr_bar.png)
+推荐入口：
 
-## Quickstart
+```python
+from src.parsing import parse_layout_markdown
+from src.chunking import chunk_policy_document
+from src.models import PolicyDocumentMetadata
 
-Run from `rag-pipeline-for-pdf-documents/`.
+pages = parse_layout_markdown("data/policies/mexico_credit_policy.pdf")
 
-### 1) Setup
+chunks = chunk_policy_document(
+    pages,
+    chunk_size=500,
+    overlap=0,
+    parser="layout_markdown",
+    document_metadata=PolicyDocumentMetadata(
+        country="Mexico",
+        institution="Buro de Credito",
+        doc_type="Compliance_Law",
+        effective_date="2026-03-01",
+    ),
+)
+```
+
+默认策略：
+
+- `chunker="sentence"`
+- `chunk_size=500`
+- `overlap=0`
+
+切块时会自动扫描 Markdown 或普通文本中的法律标题，并为 chunk 注入 `legal_hierarchy`。如果下一页没有重复标题，系统会继承上一页最近的法律层级，避免跨页法条丢失上下文。
+
+### 4. Metadata Hard Filter 检索
+
+文件：
+
+- `src/metadata_filter.py`
+- `src/bm25_retrieval.py`
+- `src/vector_store.py`
+- `src/vector_retrieval.py`
+- `src/grid_runner.py`
+
+支持按 metadata 做硬过滤。过滤是前置约束，不是降低分数。
+
+示例：
+
+```python
+metadata_filter = {
+    "country": "Mexico",
+    "institution": "Buro de Credito",
+}
+```
+
+Grid Search 中使用：
+
+```python
+from src.grid_runner import run_phase2_grid
+
+results = run_phase2_grid(
+    configs_with_chunks={config.config_id: (config, chunks)},
+    qa_by_config={config.config_id: qa_examples},
+    metadata_filter={
+        "country": "Mexico",
+        "institution": "Buro de Credito",
+    },
+)
+```
+
+支持的过滤形式：
+
+```python
+{"country": "Mexico"}
+{"country": ["Mexico", "India"]}
+{"country": {"$eq": "Mexico"}}
+{"institution": {"$in": ["RBI", "CIBIL"]}}
+{"country": {"$ne": "Uganda"}}
+```
+
+### 5. 严格防幻觉 Prompt
+
+文件：`src/prompting.py`
+
+该模块提供合规场景专用 prompt，要求模型：
+
+- 只能根据检索到的政策切块回答。
+- 如果政策库没有收录对应规定，必须回答：`当前合规政策库暂未收录此条规定`。
+- 回答合规限制、罚则或流程时必须附出处标签。
+
+使用示例：
+
+```python
+from src.prompting import build_compliance_prompt
+
+prompt = build_compliance_prompt(
+    retrieved_chunks=chunks[:5],
+    user_query="墨西哥征信机构在查询借款人信用报告前是否必须取得授权？",
+)
+```
+
+生成的切块上下文会自动包含出处标签，例如：
+
+```text
+[Chunk 1] 出处标签：【Mexico-Buro de Credito-Compliance_Law-Chapter 3 > Article 12】
+...
+```
+
+## 系统架构
+
+```text
+[PDF 法规文本]
+      |
+      v
+src/parsing.py
+layout-aware Markdown 解析
+      |
+      v
+src/chunking.py
+句子切块 + 法律层级抽取 + metadata 注入
+      |
+      v
+data/chunks/{config}.jsonl
+      |
+      +--> src/embedding.py
+      |    OpenAI Embedding + .npy 缓存
+      |
+      +--> src/qa_generator.py
+      |    生成或加载风控 QA 测试集
+      |
+      v
+src/grid_runner.py
+BM25 / Vector / Hybrid 检索评估
+      |
+      v
+outputs/{config}_results.json
+      |
+      v
+src/visualizations.py
+MRR / Recall / NDCG 等图表
+```
+
+## 目录结构
+
+```text
+src/
+  parsing.py             # PDF 解析器，含 layout_markdown
+  chunking.py            # 切块、法律层级抽取、metadata 注入
+  models.py              # Pydantic 数据模型
+  metadata_filter.py     # metadata 硬过滤逻辑
+  bm25_retrieval.py      # BM25 检索
+  vector_store.py        # FAISS 向量索引
+  vector_retrieval.py    # 向量检索封装
+  hybrid_retrieval.py    # BM25 + Vector 混合检索
+  grid_runner.py         # Grid Search 评估
+  metrics.py             # MRR、Recall@K、NDCG@K 等指标
+  prompting.py           # 合规防幻觉 Prompt
+  qa_generator.py        # QA 数据生成与持久化
+  embedding.py           # OpenAI Embedding 与缓存
+
+tests/
+  test_chunking.py
+  test_bm25_retrieval.py
+  test_vector_store.py
+  test_grid_runner.py
+  test_prompting.py
+  ...
+```
+
+## 快速开始
+
+### 1. 创建环境
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+```
+
+如果需要使用语义切块：
+
+```bash
 python -m spacy download en_core_web_md
 ```
 
-Create `.env.local` with your API keys:
+如果需要最佳 PDF Markdown 解析质量，请安装并确认以下依赖可用：
 
+```bash
+pip install marker-pdf "unstructured[pdf]"
 ```
+
+### 2. 配置 API Key
+
+创建 `.env.local`：
+
+```text
 OPENAI_API_KEY=sk-...
+OPENAI_BASE_URL=...
 COHERE_API_KEY=...
 ```
 
-Download the dataset PDF (`2022-annual-report.pdf`) into `data/`.
+`OPENAI_BASE_URL` 可选，适合代理或兼容 OpenAI API 的网关。
 
-### 2) Pipeline Run
+### 3. 准备政策 PDF
 
-Each step is run manually. QA generation is per chunking config: different chunks produce different ground truth.
-
-```python
-# Step 1: Parse + chunk
-from src.parsing import PARSERS
-from src.chunking import chunk_sentence
-from src.models import ChunkingConfig
-from src.qa_generator import save_chunks, get_chunks_path
-
-pages = PARSERS['pymupdf']('data/2022-annual-report.pdf')
-config = ChunkingConfig(parser='pymupdf', chunker='sentence', chunk_size=500, overlap=0)
-chunks = []
-for page_num, text in pages:
-    chunks.extend(chunk_sentence(text, page_num, chunk_size=500, overlap=0, parser='pymupdf'))
-save_chunks(chunks, get_chunks_path(config.config_id))
-
-# Step 2: Generate QA (30 pairs)
-from src.qa_generator import load_chunks, generate_qa_dataset, save_qa_dataset, get_qa_path
-chunks = load_chunks(get_chunks_path(config.config_id))
-qa = generate_qa_dataset(chunks, n_samples=30)
-save_qa_dataset(qa, get_qa_path(config.config_id))
-
-# Step 3: Run grid (2 models x 3 methods = 6 experiments)
-from src.qa_generator import load_qa_dataset
-from src.grid_runner import run_phase2_grid
-from src.results_io import save_results
-qa = load_qa_dataset(get_qa_path(config.config_id))
-results = run_phase2_grid(
-    configs_with_chunks={config.config_id: (config, chunks)},
-    qa_by_config={config.config_id: qa},
-)
-save_results(results, f'outputs/{config.config_id}_results.json')
-
-# Step 4: Generate visualizations
-from src.results_io import load_results
-from src.visualizations import plot_mrr_bar, plot_metrics_heatmap
-results = load_results(f'outputs/{config.config_id}_results.json')
-fig = plot_mrr_bar(results)
-fig.savefig('outputs/charts/mrr_bar.png', dpi=150, bbox_inches='tight')
-```
-
-### 3) Tests
-
-```bash
-python -m pytest tests/ -v
-```
-
-230 tests covering models, chunking, parsing, embedding, retrieval, metrics, QA generation, grid runner, reranking, visualizations, and integration.
-
-## Iteration Summary
-
-| # | Config | Chunks | Best MRR | Best Method | Outcome |
-|---|--------|-------:|----------|-------------|---------|
-| 1 | fixed_size / 500 / 0 | 1,340 | 0.796 | hybrid/large | Baseline |
-| 2 | fixed_size / 500 / 100 | 16,917 | 0.121 | vector/large | 20% overlap: chunk explosion |
-| 3 | fixed_size / 750 / 0 | 918 | 0.739 | hybrid/small | Larger chunks dilute relevance |
-| 4 | fixed_size / 500 / 25 | 4,989 | 0.390 | vector/small | Even 5% overlap hurts |
-| 5 | sentence / 500 / 50 | 2,004 | 0.714 | hybrid/large | Sentence overlap still hurts |
-| 6 | **sentence / 500 / 0** | **1,423** | **0.831** | **vector/large** | **Winner** |
-| 7 | fixed_size / 1000 / 0 | 706 | 0.709 | hybrid/small | 1000 chars too large |
-| 8 | sentence / 1000 / 0 | 733 | 0.781 | hybrid/large | Sentence absorbs size increase better |
-| 9 | semantic / 500 / 0 | 1,605 | 0.808 | hybrid/large | Topic boundaries don't beat sentence |
-| 10 | sentence / 1000 / 50 | 911 | 0.724 | hybrid/large | Overlap hurts at every size |
-| 11 | sentence / 500 / 25 | 1,991 | 0.703 | hybrid/large | Confirms overlap penalty |
-
-Each iteration was hypothesis-driven, motivated by what the previous iteration revealed, not arbitrary. The narrative arc: fixed-size baseline, overlap is destructive, sentence boundaries are the lever, semantic adds complexity without benefit, reranking is unnecessary when chunking is well-tuned.
-
-## Experimental Methodology
-
-This pipeline uses hypothesis-driven iteration rather than a brute-force grid sweep. Each chunking configuration was selected based on what the previous iteration revealed:
-
-1. **Baseline** (fixed_size/500/0) established MRR 0.796
-2. **Overlap exploration** (Iterations 2, 4) revealed overlap is destructive: chunk counts explode
-3. **Chunking method comparison** (Iterations 5-6) showed sentence boundaries outperform fixed-size
-4. **Size exploration** (Iterations 7-8) confirmed 500 chars is optimal across methods
-5. **Semantic chunking** (Iteration 9) showed topic-aware boundaries don't justify the complexity
-6. **Sentence matrix** (Iterations 10-11) completed the 2x2 size/overlap grid for sentence chunking
-7. **Reranking comparison** on the winner showed it degrades performance
-
-This produces 66 experiments (exceeding the 12 minimum and 24 suggested), covers all 3 chunking strategies, and yields findings that explain *why* each configuration performs as it does, not just which one won.
-
-## Limitations and Next Iteration
-
-**Current limitations**
-
-- MRR of 0.831 is below the 0.85 target. The reference implementation achieved 0.963 with overlap, but overlap is destructive for this specific document. The gap may reflect document-specific characteristics rather than a pipeline limitation.
-- Synthetic QA is a closed loop: questions are generated from chunks by GPT-4o-mini, then used to evaluate retrieval of those same chunks. No external QA baseline exists for this document. Mitigated by: constrained generation (LLM reads the chunk), manual spot-check of QA quality, and relative metric comparisons that hold even if individual QA pairs aren't perfect.
-- 30 QA pairs per configuration is sufficient for relative comparisons but produces noisy absolute metrics. Iteration 11 (MRR 0.703) scored lower than Iteration 5 (MRR 0.714) despite a smaller overlap ratio, likely due to QA sampling variance.
-
-**Next iteration**
-
-- Increase QA pairs to 50-100 per configuration to reduce sampling noise and produce more stable absolute metrics for the client's confidence threshold.
-- Validate findings against additional financial documents (10-K filings, quarterly earnings) to confirm that sentence/500/0 generalizes across the client's document corpus, not just this single annual report.
-- Test token-based chunk sizes (500-2000 tokens) in addition to character-based sizes to determine whether the unit of measurement affects optimal configuration.
-- Evaluate a domain-specific reranker or fine-tuned cross-encoder trained on financial text, rather than the general-purpose Cohere model that degraded results.
-
-## Solution Architecture
-
-Pipeline stages:
-
-1. **PDF Parsing** (`src/parsing.py`): PyMuPDF, pypdf, pdfplumber with a common interface; parser selected via quality evaluation
-2. **Chunking** (`src/chunking.py`): Fixed-size, sentence (NLTK), semantic (spaCy) with configurable size and overlap
-3. **QA Generation** (`src/qa_generator.py`): GPT-4o-mini generates evaluation questions per chunk; persisted to JSONL per config
-4. **Embedding** (`src/embedding.py`): Batch embedding via OpenAI API with .npy caching per config/model
-5. **Retrieval** (`src/bm25_retrieval.py`, `src/vector_retrieval.py`, `src/hybrid_retrieval.py`): BM25 (rank-bm25), FAISS vector search, hybrid with min-max normalization
-6. **Evaluation** (`src/metrics.py`): Recall@K, Precision@K, MRR, MAP, NDCG@K
-7. **Grid Search** (`src/grid_runner.py`): Orchestrates embedding, retrieval, and metrics across all config combinations
-8. **Reranking** (`src/reranker.py`): Cohere rerank-v3.5 with retry and rate limiting
-9. **Visualization** (`src/visualizations.py`): 6 evaluation charts via matplotlib/seaborn
-
-## System Topology
-
-Modular monolith with manual CLI-driven pipeline stages. Each stage reads from and writes to `data/` or `outputs/`.
+建议目录：
 
 ```text
-[PDF] -> parsing.py -> chunking.py -> data/chunks/{config}.jsonl
-                                          |
-                    qa_generator.py -> data/qa/{config}.jsonl
-                                          |
-                    embedding.py -> data/embeddings/{config}_{model}.npy
-                                          |
-                    grid_runner.py -> outputs/{config}_results.json
-                                          |
-                    visualizations.py -> outputs/charts/*.png
+data/policies/
+  mexico_credit_policy.pdf
+  india_rbi_credit_reporting.pdf
+  uganda_credit_regulation.pdf
 ```
 
-## Key Components
+`data/` 默认被 `.gitignore` 忽略，不会误传敏感政策文本或测试数据。
 
-- **`src/models.py`**: Pydantic schemas for Chunk, ChunkingConfig, ExperimentConfig, ExperimentResult, MetricsResult, QAExample. All pipeline data flows through validated models.
-- **`src/grid_runner.py`**: Orchestrates the full grid search: embeds chunks (cached), runs retrieval for each QA query, computes metrics. Accepts pre-loaded chunks and QA to avoid regeneration.
-- **`src/hybrid_retrieval.py`**: Min-max normalization for combining BM25 scores (higher=better, unbounded) with FAISS L2 distances (lower=better, unbounded) into a single ranking. FAISS distances are inverted so both signals mean "1=best."
-- **`src/qa_generator.py`**: Generates synthetic QA and manages chunk/QA persistence. Chunks are saved with UUIDs to ensure ground truth IDs match between QA generation and retrieval evaluation.
+### 4. 解析与切块
 
-## Key Decisions and Tradeoffs
+```python
+from src.parsing import parse_layout_markdown
+from src.chunking import chunk_policy_document
+from src.models import ChunkingConfig, PolicyDocumentMetadata
+from src.qa_generator import save_chunks, get_chunks_path
 
-| Decision | Chosen approach | Alternative considered | Why |
-|---|---|---|---|
-| Parser selection | Single parser (PyMuPDF) fixed for all experiments | Vary parser in grid search | All 3 parsers scored within 0.002 on chunk quality stats and ~0.05 MRR variance in full pipeline. Parser is a non-differentiator; fixing it isolates the real variables. |
-| Hybrid score normalization | Min-max normalization with FAISS distance inversion | Z-score normalization, Reciprocal Rank Fusion (RRF) | Z-score can go negative; RRF discards score magnitude. Min-max maps both signals to [0,1] and preserves relative differences. |
-| QA per chunking config | Generate separate QA dataset per config | Share QA across configs | Different chunking produces different chunk IDs. QA ground truth references specific chunk UUIDs; sharing QA across configs would produce zero-match metrics. |
-| Experimental methodology | Hypothesis-driven iteration | Brute-force grid sweep | Each iteration is motivated by the previous result. Produces the same findings with an explainable narrative arc rather than an opaque parameter sweep. |
-| Chunk persistence | Save chunks to JSONL with UUIDs | Re-chunk on each run | Re-chunking generates new UUIDs that don't match QA ground truth. Persistence ensures reproducibility across pipeline stages. |
+pdf_path = "data/policies/mexico_credit_policy.pdf"
 
-## Tech Stack
+pages = parse_layout_markdown(pdf_path)
 
-- **Language/runtime:** Python 3.13
-- **PDF parsing:** PyMuPDF, pypdf, pdfplumber
-- **NLP:** NLTK (sentence tokenization), spaCy (semantic chunking)
-- **Embeddings:** OpenAI text-embedding-3-small, text-embedding-3-large
-- **Vector store:** FAISS (IndexFlatL2)
-- **BM25:** rank-bm25
-- **Reranking:** Cohere rerank-v3.5
-- **QA generation:** GPT-4o-mini via Instructor + Pydantic
-- **Visualization:** matplotlib, seaborn, pandas
-- **Data/storage:** JSONL (chunks, QA), JSON (results), .npy (embeddings)
-- **Testing:** pytest (230 tests)
+config = ChunkingConfig(
+    parser="layout_markdown",
+    chunker="sentence",
+    chunk_size=500,
+    overlap=0,
+)
+
+chunks = chunk_policy_document(
+    pages,
+    chunk_size=500,
+    overlap=0,
+    parser="layout_markdown",
+    document_metadata=PolicyDocumentMetadata(
+        country="Mexico",
+        institution="Buro de Credito",
+        doc_type="Compliance_Law",
+        effective_date="2026-03-01",
+    ),
+)
+
+save_chunks(chunks, get_chunks_path(config.config_id))
+```
+
+### 5. 运行评估
+
+你可以使用人工准备的 30 个风控真实 QA 对，也可以先用 `qa_generator.py` 生成测试 QA。
+
+```python
+from src.grid_runner import run_phase2_grid
+from src.results_io import save_results
+
+results = run_phase2_grid(
+    configs_with_chunks={config.config_id: (config, chunks)},
+    qa_by_config={config.config_id: qa_examples},
+    embedding_models=["text-embedding-3-small", "text-embedding-3-large"],
+    retrieval_methods=["bm25", "vector", "hybrid"],
+)
+
+save_results(results, f"outputs/{config.config_id}_results.json")
+```
+
+带国家和机构过滤：
+
+```python
+results = run_phase2_grid(
+    configs_with_chunks={config.config_id: (config, chunks)},
+    qa_by_config={config.config_id: qa_examples},
+    metadata_filter={
+        "country": "Mexico",
+        "institution": "Buro de Credito",
+    },
+)
+```
+
+## 评估指标
+
+项目保留原有评估框架，支持：
+
+- `MRR`
+- `Recall@1 / Recall@3 / Recall@5 / Recall@10`
+- `Precision@K`
+- `MAP`
+- `NDCG@K`
+- 平均检索耗时
+
+后续替换为真实跨国信贷政策 PDF 和 30 个风控 QA 后，可以重新刷：
+
+- `MRR`
+- `Recall@5`
+- `NDCG@5`
+
+这些指标用于判断检索结果是否能把正确法条稳定放进前 5 个候选结果中。
+
+## 测试
+
+当前已验证的核心测试：
+
+```bash
+python3 -m pytest \
+  tests/test_models.py \
+  tests/test_chunking.py \
+  tests/test_bm25_retrieval.py \
+  tests/test_vector_store.py \
+  tests/test_vector_retrieval.py \
+  tests/test_grid_runner.py \
+  tests/test_prompting.py \
+  -q
+```
+
+本地验证结果：
+
+```text
+110 passed
+```
+
+## 当前状态
+
+已完成：
+
+- 将 PDF 解析升级为 layout-aware Markdown 入口。
+- 扩展 chunk metadata schema，支持国家、机构、文档类型、生效日期、法律层级。
+- 保留句子切块最佳基准：`500 chars / 0 overlap`。
+- 切块阶段自动抽取并注入法律层级。
+- BM25、FAISS、Hybrid、Grid Search 支持 metadata hard filter。
+- 新增合规场景防幻觉 prompt。
+- 保持原评估框架可运行。
+
+待接入：
+
+- 真实政策 PDF 数据集。
+- 人工标注的 30 个风控 QA 对。
+- 前端筛选条件，如国家、机构、文档类型、生效日期。
+- 生产向量库，如 Chroma、Pinecone 或托管 FAISS 服务。
+- 回答生成链路，将 `prompting.py` 与实际 LLM 调用封装成 API。
+
+## 注意事项
+
+- 本项目是合规检索和评估管道，不是法律意见生成系统。
+- 生产环境中应保留完整出处、版本号、生效日期和原文链接。
+- 对合规限制、罚则、准入流程等高风险问题，应默认采用“无出处不回答”策略。
+- 如果检索结果没有覆盖用户问题，回答必须是：`当前合规政策库暂未收录此条规定`。
+
+## 推荐下一步
+
+1. 将印度、墨西哥、乌干达等政策 PDF 放入 `data/policies/`。
+2. 为每份 PDF 准备文档级 metadata：国家、机构、文档类型、生效日期。
+3. 运行 `parse_layout_markdown + chunk_policy_document` 生成 chunk。
+4. 准备 30 个真实风控 QA 对，并绑定 ground-truth chunk id。
+5. 跑 Grid Search，比较 BM25、Vector、Hybrid 的 MRR、Recall@5、NDCG@5。
+6. 选出最佳检索配置后，再接入前端筛选和合规回答 API。
