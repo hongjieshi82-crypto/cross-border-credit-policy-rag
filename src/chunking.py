@@ -30,8 +30,9 @@ _LEGAL_HEADING_PATTERNS: list[tuple[int, re.Pattern[str]]] = [
         re.compile(
             r"^(?:#{1,6}\s*)?(?:"
             r"(?:chapter|chap\.?)\s+[\w.\-]+"
+            r"|(?:chapitre)\s+[\w.\-]+"
             r"|(?:cap[ií]tulo)\s+[\w.\-]+"
-            r"|(?:part|title)\s+[\w.\-]+"
+            r"|(?:part|title|t[ií]tulo)\s+[\w.\-]+"
             r"|第\s*[一二三四五六七八九十百千万\d]+\s*章"
             r").*$",
             re.IGNORECASE,
@@ -43,6 +44,7 @@ _LEGAL_HEADING_PATTERNS: list[tuple[int, re.Pattern[str]]] = [
             r"^(?:#{1,6}\s*)?(?:"
             r"article\s+[\w.\-]+"
             r"|art[ií]culo\s+[\w.\-]+"
+            r"|artigo\s+[\w.\-]+"
             r"|rule\s+[\w.\-]+"
             r"|regulation\s+[\w.\-]+"
             r"|第\s*[一二三四五六七八九十百千万\d]+\s*条"
@@ -60,6 +62,7 @@ _LEGAL_HEADING_PATTERNS: list[tuple[int, re.Pattern[str]]] = [
             r"|clause\s+[\w.\-]+"
             r"|paragraph\s+[\w.\-]+"
             r"|secci[oó]n\s+[\w.\-]+"
+            r"|se[cç][aã]o\s+[\w.\-]+"
             r"|第\s*[一二三四五六七八九十百千万\d]+\s*款"
             r").*$",
             re.IGNORECASE,

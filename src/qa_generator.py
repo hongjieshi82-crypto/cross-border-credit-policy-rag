@@ -18,8 +18,6 @@ import os
 import random
 from pathlib import Path
 
-from dotenv import load_dotenv
-
 from src.models import Chunk, QAExample
 from src.retry import retry_with_backoff
 
@@ -44,10 +42,16 @@ def _get_client():
     import instructor
     from openai import OpenAI
 
-    for candidate in [Path(".env.local"), Path("../.env.local")]:
-        if candidate.exists():
-            load_dotenv(dotenv_path=str(candidate))
-            break
+    try:
+        from dotenv import load_dotenv
+    except ImportError:
+        load_dotenv = None
+
+    if load_dotenv is not None:
+        for candidate in [Path(".env.local"), Path("../.env.local")]:
+            if candidate.exists():
+                load_dotenv(dotenv_path=str(candidate))
+                break
 
     api_key = os.getenv("OPENAI_API_KEY")
     base_url = os.getenv("OPENAI_BASE_URL")
@@ -68,13 +72,14 @@ def _get_client():
 # LLM call (seam for mocking in tests)
 # ---------------------------------------------------------------------------
 
-_PROMPT_TEMPLATE = """You are given a passage from a corporate annual report.
-Generate a specific, factual question that can be answered using ONLY the information in this passage.
+_PROMPT_TEMPLATE = """You are given a passage from a cross-border credit compliance policy, credit reporting rule, or regulator document.
+Generate a specific, factual risk-control question that can be answered using ONLY the information in this passage.
 
 The question should:
 - Be answerable from the passage alone
-- Ask about a specific fact, number, or detail
-- Be the kind of question a financial analyst or investor might ask
+- Ask about a concrete obligation, restriction, scope, timeline, penalty, consent rule, reporting duty, or operational procedure
+- Be the kind of question a credit risk, compliance, collections, or credit bureau operations team would ask
+- Avoid asking for legal advice or facts not explicitly present in the passage
 
 Passage:
 {chunk_text}

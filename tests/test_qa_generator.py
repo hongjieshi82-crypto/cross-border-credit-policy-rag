@@ -98,6 +98,17 @@ class TestGenerateQAForChunk:
             # The chunk text should appear in the prompt passed to the LLM
             assert chunk.text in call_args[0][0]
 
+    def test_prompt_is_compliance_domain_specific(self, sample_chunks):
+        """QA generation should target compliance retrieval, not annual reports."""
+        chunk = sample_chunks[0]
+        with patch("src.qa_generator._call_llm") as mock_llm:
+            mock_llm.return_value = "What compliance obligation is stated?"
+            generate_qa_for_chunk(chunk)
+            prompt = mock_llm.call_args[0][0]
+            assert "credit compliance policy" in prompt
+            assert "risk-control question" in prompt
+            assert "corporate annual report" not in prompt
+
 
 class TestGenerateQADataset:
     """Verify dataset assembly from multiple chunks."""

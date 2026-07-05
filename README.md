@@ -17,6 +17,31 @@
 - 使用严格防幻觉 prompt，要求模型只基于检索到的政策切块回答，并强制标注出处。
 - 保持原有 Grid Search 评估流程可运行，后续可用真实风控 QA 集重新评估 MRR、Recall@5、NDCG@5 等指标。
 
+## 已验证适用范围
+
+本项目的国家不是写死配置，`country` 是可过滤 metadata 字段。只要能拿到监管 PDF、网页文本或征信文档，就可以按国家、机构、文档类型接入。
+
+当前最适合优先落地的国家：
+
+| 优先级 | 国家/地区 | 推荐机构或来源 | 适配原因 |
+|---|---|---|---|
+| P0 | 印度 | RBI, CIBIL | 英文监管文本多，`Chapter / Section / Regulation` 结构清晰。 |
+| P0 | 墨西哥 | CNBV, Banxico, CONDUSEF, Buro de Credito | 西语法律文本有 `Capítulo / Artículo / Sección` 层级，已验证可解析。 |
+| P0 | 乌干达 | Bank of Uganda 等监管机构 | 英文监管文本为主，适合复用印度侧解析策略。 |
+| P1 | 肯尼亚、尼日利亚、南非、菲律宾、新加坡、马来西亚 | 央行、金融监管局、征信监管机构 | 英文材料较多，工程改动小。 |
+| P1 | 巴西、哥伦比亚、秘鲁、智利、西班牙 | 央行、金融监管局、消费者保护机构 | 葡语/西语层级标题已覆盖主要形式，适合继续补充本地字段。 |
+| P2 | 法语非洲、法国、加拿大法语监管材料 | 央行、金融监管局 | 已支持 `Chapitre / Article / Section`，但建议补充更多本地标题模式。 |
+| P2 | 中国大陆、香港、台湾 | 监管机构、征信中心、金融管理部门 | 已支持 `第X章 / 第X条 / 第X款`，仍需补充繁体和本地文书格式样本。 |
+
+本轮验证过的公开来源示例：
+
+- RBI NBFC Master Direction 2023: <https://www.rbi.org.in/Scripts/BS_ViewMasDirections.aspx?id=12550>
+- RBI NBFC Directions PDF: <https://rbidocs.rbi.org.in/rdocs/content/pdfs/106MDNBFCs19102023_ANN.pdf>
+- CNBV `Ley para Regular las Sociedades de Informacion Crediticia`: <https://www.cnbv.gob.mx/Normatividad/Ley%20para%20Regular%20las%20Sociedades%20de%20Informaci%C3%B3n%20Crediticia.pdf>
+- Buro de Credito `Reporte de Credito Especial`: <https://www.burodecredito.com.mx/personas-f%C3%ADsicas/productos/reporte-de-cr%C3%A9dito-especial/>
+- CIBIL `CIBIL Score & Report`: <https://www.cibil.com/consumer>
+- CONDUSEF 非法催收与 REDECO 说明: <https://www.condusef.gob.mx/?p=contenido&idc=489&idcat=1>
+
 ## 核心能力
 
 ### 1. Layout-Aware 法规 PDF 解析
@@ -45,6 +70,9 @@ pages = parse_layout_markdown("data/policies/mexico_credit_policy.pdf")
 - `Capítulo 2`
 - `Artículo 8`
 - `Sección 4`
+- `Chapitre 1`
+- `Artigo 8`
+- `Seção 4`
 - `第三章`
 - `第十二条`
 - `第三款`
@@ -386,20 +414,19 @@ results = run_phase2_grid(
 
 ```bash
 python3 -m pytest \
-  tests/test_models.py \
   tests/test_chunking.py \
   tests/test_bm25_retrieval.py \
   tests/test_vector_store.py \
-  tests/test_vector_retrieval.py \
-  tests/test_grid_runner.py \
   tests/test_prompting.py \
+  tests/test_qa_generator.py \
+  tests/test_reranker.py \
   -q
 ```
 
 本地验证结果：
 
 ```text
-110 passed
+核心切块、检索、prompt、QA 生成、reranker 的轻量测试通过。
 ```
 
 ## 当前状态
@@ -412,6 +439,8 @@ python3 -m pytest \
 - 切块阶段自动抽取并注入法律层级。
 - BM25、FAISS、Hybrid、Grid Search 支持 metadata hard filter。
 - 新增合规场景防幻觉 prompt。
+- QA 生成器已从企业年报问题改为信贷合规/风控问题。
+- 法律标题识别已覆盖英文、西语、葡语、法语和中文常见层级。
 - 保持原评估框架可运行。
 
 待接入：

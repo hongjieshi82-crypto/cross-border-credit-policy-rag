@@ -288,6 +288,18 @@ class TestComplianceHierarchy:
             "Chapter 3 > Article 12 > Section 3"
         )
 
+    def test_extracts_portuguese_legal_hierarchy(self):
+        text = "# Capítulo 2\n## Artigo 8\n### Seção 4\nControles obrigatórios."
+        assert extract_legal_hierarchy(text) == (
+            "Capítulo 2 > Artigo 8 > Seção 4"
+        )
+
+    def test_extracts_french_legal_hierarchy(self):
+        text = "# Chapitre 1\n## Article 2\n### Section 3\nObligations applicables."
+        assert extract_legal_hierarchy(text) == (
+            "Chapitre 1 > Article 2 > Section 3"
+        )
+
     def test_carries_hierarchy_across_pages(self):
         pages = [
             (0, "# Chapter 3\n## Article 12\nThe rule starts here."),

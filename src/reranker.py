@@ -15,8 +15,6 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from dotenv import load_dotenv
-
 from src.retry import retry_with_backoff
 
 # ---------------------------------------------------------------------------
@@ -34,10 +32,16 @@ def _get_client():
 
     import cohere
 
-    for candidate in [Path(".env.local"), Path("../.env.local")]:
-        if candidate.exists():
-            load_dotenv(dotenv_path=str(candidate))
-            break
+    try:
+        from dotenv import load_dotenv
+    except ImportError:
+        load_dotenv = None
+
+    if load_dotenv is not None:
+        for candidate in [Path(".env.local"), Path("../.env.local")]:
+            if candidate.exists():
+                load_dotenv(dotenv_path=str(candidate))
+                break
 
     api_key = os.getenv("COHERE_API_KEY")
 

@@ -20,15 +20,15 @@ from collections.abc import Callable
 
 
 _CHAPTER_RE = re.compile(
-    r"^(?:chapter|chap\.?|cap[ií]tulo|part|title)\s+[\w.\-]+|^第\s*[一二三四五六七八九十百千万\d]+\s*章",
+    r"^(?:chapter|chap\.?|chapitre|cap[ií]tulo|part|title|t[ií]tulo)\s+[\w.\-]+|^第\s*[一二三四五六七八九十百千万\d]+\s*章",
     re.IGNORECASE,
 )
 _ARTICLE_RE = re.compile(
-    r"^(?:article|art[ií]culo|rule|regulation)\s+[\w.\-]+|^第\s*[一二三四五六七八九十百千万\d]+\s*条",
+    r"^(?:article|art[ií]culo|artigo|rule|regulation)\s+[\w.\-]+|^第\s*[一二三四五六七八九十百千万\d]+\s*条",
     re.IGNORECASE,
 )
 _SECTION_RE = re.compile(
-    r"^(?:section|sec\.|subsection|clause|paragraph|secci[oó]n)\s*[\w.\-]+|^第\s*[一二三四五六七八九十百千万\d]+\s*款",
+    r"^(?:section|sec\.|subsection|clause|paragraph|secci[oó]n|se[cç][aã]o)\s*[\w.\-]+|^第\s*[一二三四五六七八九十百千万\d]+\s*款",
     re.IGNORECASE,
 )
 
